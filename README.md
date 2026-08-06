@@ -20,4 +20,14 @@
 - 水、物资、秩序与风暴倒计时构成主要压力；
 - 多条可组合的生存路线，不设置唯一正确结局。
 
-详细设计将在 `docs/` 中持续迭代。
+## 设计文档
+
+- [沙漠城镇 Vertical Slice](docs/game-design/desert-town-vertical-slice.md)
+- [初始系统架构](docs/architecture/initial-architecture.md)
+- [开发路线图与决策清单](docs/roadmap.md)
+
+## 当前阶段
+
+项目处于 Phase 0：设计基线。
+
+下一步是确认玩家定位、回合节奏、信息可见范围和对话自由度，再定义领域类型与场景配置 schema，进入不依赖 Discord 和 LLM 的确定性模拟内核开发。
