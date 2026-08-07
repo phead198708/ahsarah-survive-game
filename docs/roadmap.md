@@ -11,6 +11,8 @@
 - 单个 Discord Server；
 - 同步回合制，每个玩家窗口 5–10 分钟；
 - 6 个 NPC、6 个回合；
+- 4 个个人生存指标；
+- 最多 8 类原料、8 类成品和 8 条配方；
 - TypeScript 模块化单体；
 - SQLite；
 - 一个 Discord Bot + Webhook NPC 身份；
@@ -32,7 +34,8 @@
 - 世界背景与开发者真相；
 - 6 个 NPC 初始档案；
 - 地点和频道映射；
-- 核心资源；
+- 个人生存状态；
+- 原料、成品、资源节点、生产设施与配方；
 - 6 回合外部事件；
 - 动作集合；
 - 生存路线和结局条件；
@@ -45,8 +48,9 @@
 - 每条生存路线都有机器可判断的前置条件；
 - 每个秘密都有明确的初始持有者或可发现来源；
 - 每个动作都能定义前置条件和结果事件；
+- 每个 Item 和 Recipe 都有稳定 ID 与机器可校验规则；
 - 没有依赖自然语言才能完成的世界状态修改；
-- 能手工走完一局纸面模拟。
+- 能手工走完包含生存消耗、采集、生产和使用的一局纸面模拟。
 
 ## Phase 1：确定性模拟内核
 
@@ -60,6 +64,9 @@
 - WorldState 和 Projection；
 - Domain Event 日志；
 - Action Validator / Resolver；
+- Survival Upkeep；
+- Inventory、Reservation 和所有权；
+- Resource Node、Recipe、Production Station 和 Production Job；
 - Scenario Director；
 - 规则 NPC 或脚本 Intent；
 - CLI runner；
@@ -69,10 +76,13 @@
 ### 验收门槛
 
 - CLI 能完成 6 回合并产生结局；
-- 所有资源变化可追溯；
+- 所有生存与库存变化可追溯；
+- 不存在负库存、超量消费或并发重复消耗；
 - 非法动作不能修改世界；
 - 相同 seed 和 Intent 产生相同 Projection hash；
 - 至少覆盖修井、夜海、撤离和商队四种结局；
+- 至少三条路线包含“采集 → 生产 → 使用”链条；
+- 相同 seed 可重放出相同库存和 Survival State；
 - Domain tests 全部通过。
 
 ## Phase 2：Discord 游戏外壳
@@ -128,7 +138,9 @@
 - 行为差异不仅体现在语言风格；
 - 玩家欺骗或帮助 NPC 后，后续决策出现可解释变化；
 - 单局模型调用不超过预算；
-- 6 NPC 无人干预可运行完整 6 回合。
+- 6 NPC 无人干预可运行完整 6 回合；
+- Critical Need 能合理改变 Agent 原计划；
+- Agent 不会使用未感知资源或发明不存在的物品和配方。
 
 ## Phase 4：可玩 Vertical Slice
 
@@ -154,6 +166,7 @@
 
 - 80% 以上的游戏可以正常结束；
 - 非法世界状态为 0；
+- 负库存、重复消耗和未授权取物问题为 0；
 - 信息泄露问题为 0；
 - 至少产生 3 类不同结局；
 - 多数测试者可以从行为而非姓名辨认至少 4 个 NPC；
@@ -242,11 +255,23 @@ Phase 4 后先判断是否值得扩张，而不是自动继续开发。
 
 推荐继续模拟到结局，并在赛后报告中展示关键因果链。
 
+### D7：生存与生产复杂度
+
+推荐首版固定为：
+
+- Hydration、Satiety、Energy、Health 四项个人指标；
+- 8 类原料、8 类成品、8 条基础配方；
+- 不加入品质、耐久、随机词缀、科技树和浮动市场价格；
+- 新采集原料从下一回合起才能用于生产；
+- 玩家与 NPC 使用相同生存规则，但专业配方需要对应技能或 NPC 合作。
+
+Phase 4 试玩后再判断是否扩展更复杂的生产链。
+
 ## 建议的下一步
 
 1. 审阅并确认 Phase 0 的世界规则；
 2. 为 D1–D6 建立 ADR；
 3. 定义 TypeScript domain types；
-4. 定义 `ActionIntent`、`DomainEvent` 和 Scenario 配置 schema；
-5. 制作一份不依赖模型的手工回合样例；
+4. 定义 `ActionIntent`、`DomainEvent`、`ItemDefinition`、`RecipeDefinition` 和 Scenario 配置 schema；
+5. 制作一份包含生存消耗、采集、生产、运输和消费且不依赖模型的手工回合样例；
 6. 通过后进入 Phase 1 实现。
