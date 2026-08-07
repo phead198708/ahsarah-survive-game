@@ -26,7 +26,8 @@ Discord 不是权威数据源，LLM 也不是权威数据源。权威状态只�
 5. **Replayable**：重放使用已保存的 Agent 输出，不再次调用模型。
 6. **Bounded autonomy**：每个 Agent 有独立状态和目标，但只在调度器允许时运行。
 7. **Graceful degradation**：模型超时或格式错误不能阻塞游戏。
-8. **Content as data**：NPC、地点、主线事件和动作规则以配置定义，不硬编码在 Discord Bot 中。
+8. **Content as data**：NPC、地点、主线事件、物品、配方和动作规则以配置定义，不硬编码在 Discord Bot 中。
+9. **Resource conservation**：采集、预留、生产、运输和消费必须保持库存守恒，禁止负库存和重复消耗。
 
 ## 3. 上下文架构
 
@@ -81,7 +82,8 @@ Coordinator 是用例编排层，不包含具体动作规则。
 - 校验动作前置条件；
 - 解决多个动作的资源或目标冲突；
 - 生成确定性的 Domain Event；
-- 更新位置、资源、健康、关系和场景 flag；
+- 更新位置、个人生存状态、库存、设施、关系和场景 flag；
+- 处理资源节点、物品预留、配方生产和建设项目；
 - 判断生存路线是否已满足；
 - 结算最终结局。
 
@@ -144,6 +146,9 @@ packages/
       entities/
       events/
       actions/
+      inventory/
+      production/
+      survival/
       policies/
       schemas/
 
@@ -153,6 +158,9 @@ packages/
       scheduler/
       validation/
       resolution/
+      inventory/
+      production/
+      survival/
       projection/
       endings/
 
@@ -183,6 +191,10 @@ packages/
       scenario.yaml
       locations.yaml
       actions.yaml
+      items.yaml
+      recipes.yaml
+      resource-nodes.yaml
+      stations.yaml
       npcs/
       events/
       endings/
@@ -224,9 +236,12 @@ GameSession
 WorldState
   clock
   stormEta
-  resources
   locations
   characters
+  inventories
+  resourceNodes
+  productionStations
+  activeProjects
   scenarioFlags
   activeThreats
   availableEndings
@@ -246,12 +261,64 @@ NPCState
   beliefs
   relationships
   inventory
-  health
+  equipment
+  survival
+    hydration
+    satiety
+    energy
+    health
   currentPlan
   status
 ```
 
-### 5.4 Memory
+### 5.4 物品、资源和生产
+
+```text
+ItemDefinition
+  itemId
+  category
+  unitWeight
+  stackLimit
+  consumableEffects
+  tags
+
+ItemStack
+  itemId
+  quantity
+  ownerType
+  ownerId
+  visibility
+  reservedQuantity
+
+ResourceNode
+  nodeId
+  locationId
+  itemId
+  remainingQuantity
+  regenerationPolicy
+  hazard
+
+RecipeDefinition
+  recipeId
+  inputItems
+  outputItems
+  stationType
+  requiredSkill
+  energyCost
+
+ProductionJob
+  jobId
+  actorId
+  recipeId
+  stationId
+  inputReservations
+  intendedRecipients
+  status
+```
+
+库存、Reservation、配方输入和输出均由 Simulation 原子结算。详细规则见[生存、采集与生产系统](../game-design/survival-production-system.md)。
+
+### 5.5 Memory
 
 ```text
 Memory
@@ -271,7 +338,7 @@ Memory
 
 Memory 是 NPC 的主观记录，不是权威事实。它可以不完整、过时或错误。
 
-### 5.5 ActionIntent
+### 5.6 ActionIntent
 
 ```json
 {
@@ -293,7 +360,7 @@ Memory 是 NPC 的主观记录，不是权威事实。它可以不完整、过�
 
 `reasonSummary` 仅用于调试和评估，不应显示给玩家，也不参与规则结算。
 
-### 5.6 DomainEvent
+### 5.7 DomainEvent
 
 ```text
 DomainEvent
@@ -320,7 +387,16 @@ DomainEvent
 - `MessageSpoken`
 - `ActionRejected`
 - `RepairProgressed`
-- `ResourceTransferred`
+- `ResourceCollected`
+- `ResourceNodeDepleted`
+- `ItemReserved`
+- `ReservationReleased`
+- `ItemTransferred`
+- `ItemConsumed`
+- `ItemCrafted`
+- `SurvivalNeedChanged`
+- `CharacterBecameCritical`
+- `ProjectProgressed`
 - `NpcObservedEvent`
 - `BeliefChanged`
 - `RelationshipChanged`
@@ -332,7 +408,8 @@ DomainEvent
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Announce
+    [*] --> Upkeep
+    Upkeep --> Announce
     Announce --> PlayerWindow
     PlayerWindow --> Observe
     Observe --> Plan
@@ -340,52 +417,60 @@ stateDiagram-v2
     Resolve --> React
     React --> Reflect
     Reflect --> Summarize
-    Summarize --> Announce: next turn
+    Summarize --> Upkeep: next turn
     Summarize --> Finished: final turn
 ```
 
-### 6.1 Announce
+### 6.1 Upkeep
+
+根据天气、地点、装备和上一回合行动，确定性结算 Hydration、Satiety、Energy、Health、疾病与持续设施效果。Upkeep 只产生状态事件，不允许自动消费未被角色预留的公共或私人库存。
+
+### 6.2 Announce
 
 Scenario Director 根据回合数和当前 flag 选择外部事件，产生 `WorldEventAnnounced`。
 
-### 6.2 PlayerWindow
+### 6.3 PlayerWindow
 
 接受玩家本回合允许的广播、地点交互和直接请求。玩家文本先转换成 Message Event，不直接改变世界事实。
 
-### 6.3 Observe
+### 6.4 Observe
 
 为每个 NPC 构造隔离的 Observation：
 
 - 全城广播；
 - 当前地点事件；
 - 直接消息；
-- 当前可感知角色和物品；
+- 自己的 Survival State；
+- 当前可感知角色、物品、资源节点和生产设施；
+- 已知库存、配方、生产承诺和建设需求；
 - 与当前局势相关的记忆；
 - NPC 已知的合法动作类型。
 
-### 6.4 Plan
+### 6.5 Plan
 
 所有 NPC 基于同一阶段开始时的 Snapshot 提交主要 Action Intent，避免先运行的 NPC 获得不公平的信息优势。
 
-### 6.5 Resolve
+### 6.6 Resolve
 
 Resolver 按规则解决冲突：
 
 1. 校验 actor 状态和位置；
 2. 校验目标是否存在；
-3. 校验技能、物品、资源和时间；
-4. 处理同一资源的竞争；
-5. 使用固定规则和 session seed 处理概率；
-6. 生成 Domain Event；
-7. 原子提交事件和 Projection。
+3. 校验技能、体力、配方、设施、物品和时间；
+4. 原子预留输入物品和设施容量；
+5. 处理同一资源节点、库存或设施的竞争；
+6. 消耗已预留输入，并使用固定规则和 session seed 处理产量或失败；
+7. 产生输出物品与 Domain Event；
+8. 释放未使用的 Reservation；
+9. 原子提交事件和 Projection。
 
 动作优先级必须由规则定义，不能取决于异步模型调用完成顺序。
 
-### 6.6 React
+### 6.7 React
 
 只允许由重大结果触发一次有限反应，例如逃跑、拒绝交易、紧急治疗。首版限制最大反应深度为 1，避免 Agent 相互触发形成无限循环。
 
-### 6.7 Reflect
+### 6.8 Reflect
 
 只有满足条件时才调用：
 
@@ -395,7 +480,7 @@ Resolver 按规则解决冲突：
 - 每两个回合的周期性总结；
 - 最终回合。
 
-### 6.8 Summarize
+### 6.9 Summarize
 
 世界引擎生成结构化公共结果，再由模板或模型润色成广播。总结只能描述已发生的事件。
 
@@ -469,7 +554,10 @@ ActionDefinition
   requiredLocation
   requiredSkills
   requiredItems
+  requiredStation
+  recipeId
   resourceCost
+  energyCost
   duration
   visibility
   successPolicy
@@ -485,6 +573,8 @@ ActionDefinition
 - **PartiallySucceeded**：只完成部分进度。
 
 模型不能通过自然语言宣告成功。
+
+采集和生产还必须区分 Item Stack 所有权、可见性、可携带量与 reservedQuantity。同一回合新采集的物品默认在结算后才可用于后续生产，避免形成无限生产链。
 
 ## 10. Scenario Director
 
@@ -577,7 +667,10 @@ Replay Mode 不调用模型，而是依次读取已保存的 Action Intent 和 D
 ### Domain Unit Tests
 
 - 动作前置条件；
-- 资源守恒；
+- 库存守恒、容量和所有权；
+- 并发预留不会重复消耗；
+- 配方输入输出和设施容量；
+- Survival Upkeep 与阈值效果；
 - 位置与可见性；
 - 关系更新；
 - 生存路线条件；
@@ -588,7 +681,9 @@ Replay Mode 不调用模型，而是依次读取已保存的 Action Intent 和 D
 - 6 回合可以无模型运行；
 - 同一 seed 和已保存 Intent 可重放到同一 Projection hash；
 - 并发提交顺序不改变结算；
-- 非法动作无法修改世界。
+- 非法动作无法修改世界；
+- 相同 seed 可重放到相同库存和 Survival State；
+- 采集、生产、消费和运输都可追溯到事件。
 
 ### Agent Contract Tests
 
